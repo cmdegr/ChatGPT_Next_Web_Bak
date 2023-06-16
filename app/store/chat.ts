@@ -11,6 +11,7 @@ import { StoreKey } from "../constant";
 import { api, RequestMessage } from "../client/api";
 import { ChatControllerPool } from "../client/controller";
 import { prettyObject } from "../utils/format";
+import { estimateTokenLength } from "../utils/token";
 
 export type ChatMessage = RequestMessage & {
   date: string;
@@ -102,7 +103,7 @@ interface ChatStore {
 }
 
 function countMessages(msgs: ChatMessage[]) {
-  return msgs.reduce((pre, cur) => pre + cur.content.length, 0);
+  return msgs.reduce((pre, cur) => pre + estimateTokenLength(cur.content), 0);
 }
 
 export const useChatStore = create<ChatStore>()(
@@ -226,6 +227,7 @@ export const useChatStore = create<ChatStore>()(
 
       onNewMessage(message) {
         get().updateCurrentSession((session) => {
+          session.messages = session.messages.concat();
           session.lastUpdate = Date.now();
         });
         get().updateStat(message);
@@ -257,7 +259,12 @@ export const useChatStore = create<ChatStore>()(
         });
 
         // get recent messages
-        const systemMessages = [systemInfo];
+        const systemMessages = [];
+        // if user define a mask with context prompts, wont send system info
+        if (session.mask.context.length === 0) {
+          systemMessages.push(systemInfo);
+        }
+
         const recentMessages = get().getMessagesWithMemory();
         const sendMessages = systemMessages.concat(
           recentMessages.concat(userMessage),
@@ -267,8 +274,7 @@ export const useChatStore = create<ChatStore>()(
 
         // save user's and bot's message
         get().updateCurrentSession((session) => {
-          session.messages.push(userMessage);
-          session.messages.push(botMessage);
+          session.messages = session.messages.concat([userMessage, botMessage]);
         });
 
         // make request
@@ -281,7 +287,9 @@ export const useChatStore = create<ChatStore>()(
             if (message) {
               botMessage.content = message;
             }
-            set(() => ({}));
+            get().updateCurrentSession((session) => {
+              session.messages = session.messages.concat();
+            });
           },
           onFinish(message) {
             botMessage.streaming = false;
@@ -293,7 +301,6 @@ export const useChatStore = create<ChatStore>()(
               sessionIndex,
               botMessage.id ?? messageIndex,
             );
-            set(() => ({}));
           },
           onError(error) {
             const isAborted = error.message.includes("aborted");
@@ -306,8 +313,9 @@ export const useChatStore = create<ChatStore>()(
             botMessage.streaming = false;
             userMessage.isError = !isAborted;
             botMessage.isError = !isAborted;
-
-            set(() => ({}));
+            get().updateCurrentSession((session) => {
+              session.messages = session.messages.concat();
+            });
             ChatControllerPool.remove(
               sessionIndex,
               botMessage.id ?? messageIndex,
@@ -345,7 +353,7 @@ export const useChatStore = create<ChatStore>()(
 
         // wont send cleared context messages
         const clearedContextMessages = session.messages.slice(
-          (session.clearContextIndex ?? -1) + 1,
+          session.clearContextIndex ?? 0,
         );
         const messages = clearedContextMessages.filter((msg) => !msg.isError);
         const n = messages.length;
